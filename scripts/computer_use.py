@@ -50,6 +50,64 @@ from PIL import Image, ImageGrab
 pyautogui.FAILSAFE = True   # move mouse to top-left corner to abort
 pyautogui.PAUSE = 0.15      # small pause between actions for stability
 
+# ── overlay integration ──────────────────────────────────────────────────────
+_overlay_script = Path(__file__).parent / "control_overlay.py"
+
+def _overlay_show(msg: str = ""):
+    """Start overlay in background (non-blocking)."""
+    try:
+        import subprocess
+        subprocess.Popen(
+            [sys.executable, str(_overlay_script), "show", msg],
+            creationflags=0x00000008  # DETACHED_PROCESS (Windows)
+        )
+        import time as _t; _t.sleep(0.3)
+    except Exception:
+        pass
+
+def _overlay_update(msg: str):
+    """Update overlay action text."""
+    try:
+        msgfile = Path(import_tempfile()) / "computer_use_overlay.msg"
+        msgfile.write_text(msg, encoding="utf-8")
+    except Exception:
+        pass
+
+def import_tempfile():
+    import tempfile
+    return tempfile.gettempdir()
+
+def _overlay_hide():
+    """Close overlay."""
+    try:
+        import subprocess
+        subprocess.Popen([sys.executable, str(_overlay_script), "hide"])
+    except Exception:
+        pass
+
+def _check_abort() -> bool:
+    """Return True if user pressed Ctrl+Shift+Q."""
+    abort = Path(import_tempfile()) / "computer_use_abort.flag"
+    return abort.exists()
+
+def _clear_abort():
+    abort = Path(import_tempfile()) / "computer_use_abort.flag"
+    abort.unlink(missing_ok=True)
+
+# Track if overlay is already running this session
+_overlay_started = False
+
+def _ensure_overlay(action_desc: str):
+    global _overlay_started
+    if _check_abort():
+        print("[ABORT] Ctrl+Shift+Q detected — stopping")
+        sys.exit(130)
+    if not _overlay_started:
+        _overlay_show(action_desc)
+        _overlay_started = True
+    else:
+        _overlay_update(action_desc)
+
 SCREENSHOT_DIR = Path(tempfile.gettempdir()) / "computer_use_shots"
 SCREENSHOT_DIR.mkdir(exist_ok=True)
 
@@ -170,52 +228,62 @@ def main():
 
     try:
         if action == "screenshot":
+            _ensure_overlay("截图中...")
             path = args[1] if len(args) > 1 else None
             result = screenshot(path)
             print(result)
 
         elif action == "click":
             x, y = int(args[1]), int(args[2])
+            _ensure_overlay(f"点击 ({x}, {y})")
             pyautogui.click(x, y)
             print(f"[OK] click ({x}, {y})")
 
         elif action == "rclick":
             x, y = int(args[1]), int(args[2])
+            _ensure_overlay(f"右键点击 ({x}, {y})")
             pyautogui.rightClick(x, y)
             print(f"[OK] rclick ({x}, {y})")
 
         elif action == "dclick":
             x, y = int(args[1]), int(args[2])
+            _ensure_overlay(f"双击 ({x}, {y})")
             pyautogui.doubleClick(x, y)
             print(f"[OK] dclick ({x}, {y})")
 
         elif action == "move":
             x, y = int(args[1]), int(args[2])
+            _ensure_overlay(f"移动鼠标 → ({x}, {y})")
             pyautogui.moveTo(x, y, duration=0.3)
             print(f"[OK] move ({x}, {y})")
 
         elif action == "type":
             text = " ".join(args[1:])
+            _ensure_overlay(f"输入: {text[:30]}")
             type_unicode(text)
             print(f"[OK] typed {len(text)} chars")
 
         elif action == "key":
             key = args[1]
+            _ensure_overlay(f"按键: {key}")
             pyautogui.press(key)
             print(f"[OK] key {key}")
 
         elif action == "hotkey":
             keys = args[1:]
+            _ensure_overlay(f"快捷键: {'+'.join(keys)}")
             pyautogui.hotkey(*keys)
             print(f"[OK] hotkey {'+'.join(keys)}")
 
         elif action == "scroll":
             x, y, clicks = int(args[1]), int(args[2]), int(args[3])
+            _ensure_overlay(f"滚动 {clicks} 格 at ({x},{y})")
             pyautogui.scroll(clicks, x=x, y=y)
             print(f"[OK] scroll {clicks} at ({x}, {y})")
 
         elif action == "drag":
             x1, y1, x2, y2 = int(args[1]), int(args[2]), int(args[3]), int(args[4])
+            _ensure_overlay(f"拖拽 ({x1},{y1}) → ({x2},{y2})")
             pyautogui.moveTo(x1, y1, duration=0.3)
             pyautogui.dragTo(x2, y2, duration=0.5, button="left")
             print(f"[OK] drag ({x1},{y1}) → ({x2},{y2})")
@@ -223,6 +291,7 @@ def main():
         elif action == "find":
             template = args[1]
             confidence = float(args[2]) if len(args) > 2 else 0.8
+            _ensure_overlay(f"查找图像: {Path(template).name}")
             result = find_image_on_screen(template, confidence)
             if result:
                 print(f"{result[0]} {result[1]}")
@@ -231,20 +300,24 @@ def main():
                 sys.exit(1)
 
         elif action == "read":
+            _ensure_overlay("OCR 识别屏幕文字...")
             print(ocr_screen())
 
         elif action == "winlist":
+            _ensure_overlay("列举窗口...")
             titles = list_windows()
             for t in titles:
                 print(t)
 
         elif action == "focus":
             substr = " ".join(args[1:])
+            _ensure_overlay(f"聚焦窗口: {substr}")
             ok = focus_window(substr)
             sys.exit(0 if ok else 1)
 
         elif action == "run":
             cmd = " ".join(args[1:])
+            _ensure_overlay(f"启动: {cmd[:40]}")
             subprocess.Popen(cmd, shell=True)
             print(f"[OK] launched: {cmd}")
             time.sleep(1)
@@ -252,6 +325,20 @@ def main():
         elif action == "getpos":
             x, y = pyautogui.position()
             print(f"{x} {y}")
+
+        elif action == "overlay":
+            # overlay subcommands: show / hide / status
+            sub = args[1] if len(args) > 1 else "show"
+            if sub == "hide":
+                _overlay_hide()
+                print("[overlay] hidden")
+            elif sub == "status":
+                abort = Path(import_tempfile()) / "computer_use_abort.flag"
+                print("aborted" if abort.exists() else "running")
+            else:
+                msg = " ".join(args[2:]) if len(args) > 2 else ""
+                _overlay_show(msg)
+                print("[overlay] shown")
 
         else:
             print(f"[ERR] Unknown action: {action}")
